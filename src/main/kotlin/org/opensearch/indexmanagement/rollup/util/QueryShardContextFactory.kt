@@ -75,7 +75,7 @@ object QueryShardContextFactory {
             .put(Environment.PATH_HOME_SETTING.key, environment.tmpFile())
             .build()
         val pluginsService =
-            PluginsService(nodeSettings, null, environment.modulesFile(), environment.pluginsFile(), listOf())
+            PluginsService(nodeSettings, null, null, null, listOf())
         val additionalSettings = pluginsService.pluginSettings
         val settingsModule = SettingsModule(
             nodeSettings,
