@@ -23,13 +23,16 @@ import org.opensearch.indexmanagement.rollup.model.metric.ValueCount
 import org.opensearch.indexmanagement.waitFor
 import org.opensearch.jobscheduler.spi.schedule.IntervalSchedule
 import org.opensearch.rest.RestStatus
+import org.opensearch.test.junit.annotations.TestLogging
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
 @Suppress("UNCHECKED_CAST")
+@TestLogging("level:DEBUG", reason = "Debug for tests.")
 class RollupInterceptorIT : RollupRestTestCase() {
 
     fun `test roll up search`() {
+        logger.info("123456546546546456456546")
         generateNYCTaxiData("source_rollup_search")
         val rollup = Rollup(
             id = "basic_term_query_rollup_search",
@@ -1081,7 +1084,9 @@ class RollupInterceptorIT : RollupRestTestCase() {
     fun `test roll up search query_string query`() {
         val sourceIndex = "source_rollup_search_qsq_1"
         val targetIndex = "target_rollup_qsq_search_1"
-        generateNYCTaxiData(sourceIndex)
+
+        createSampleIndexForQSQTest(sourceIndex)
+
         val rollup = Rollup(
             id = "basic_query_string_query_rollup_search",
             enabled = true,
@@ -1098,19 +1103,18 @@ class RollupInterceptorIT : RollupRestTestCase() {
             delay = 0,
             continuous = false,
             dimensions = listOf(
-                DateHistogram(sourceField = "tpep_pickup_datetime", fixedInterval = "1h"),
-                Terms("RatecodeID", "RatecodeID"),
-                Terms("PULocationID", "PULocationID")
+                DateHistogram(sourceField = "event_ts", fixedInterval = "1h"),
+                Terms("state", "state"),
+                Terms("state1", "state1"),
             ),
             metrics = listOf(
                 RollupMetrics(
-                    sourceField = "passenger_count", targetField = "passenger_count",
+                    sourceField = "earnings", targetField = "earnings",
                     metrics = listOf(
                         Sum(), Min(), Max(),
                         ValueCount(), Average()
                     )
-                ),
-                RollupMetrics(sourceField = "total_amount", targetField = "total_amount", metrics = listOf(Max(), Min()))
+                )
             )
         ).let { createRollup(it, it.id) }
 
@@ -1131,13 +1135,14 @@ class RollupInterceptorIT : RollupRestTestCase() {
                 "size": 0,
                 "query": {
                     "query_string": {
-                        "query": "RatecodeID:>=1 AND RatecodeID:<=10"
+                        "query": "state:TX TX1",
+                        "fields": ["state1"]
                     }
                 },
                 "aggs": {
-                    "min_passenger_count": {
+                    "earnings_total": {
                         "sum": {
-                            "field": "passenger_count"
+                            "field": "earnings"
                         }
                     }
                 }
@@ -1151,8 +1156,39 @@ class RollupInterceptorIT : RollupRestTestCase() {
         var rollupAggRes = rollupRes.asMap()["aggregations"] as Map<String, Map<String, Any>>
         assertEquals(
             "Source and rollup index did not return same min results",
-            rawAggRes.getValue("min_passenger_count")["value"],
-            rollupAggRes.getValue("min_passenger_count")["value"]
+            rawAggRes.getValue("earnings_total")["value"],
+            rollupAggRes.getValue("earnings_total")["value"]
+        )
+
+        // Prefix query
+        req = """
+            {
+                "size": 0,
+                "query": {
+                    "query_string": {
+                        "query": "state:TX TX1",
+                        "default_field": "state1"
+                    }
+                },
+                "aggs": {
+                    "earnings_total": {
+                        "sum": {
+                            "field": "earnings"
+                        }
+                    }
+                }
+            }
+        """.trimIndent()
+        rawRes = client().makeRequest("POST", "/$sourceIndex/_search", emptyMap(), StringEntity(req, ContentType.APPLICATION_JSON))
+        assertTrue(rawRes.restStatus() == RestStatus.OK)
+        rollupRes = client().makeRequest("POST", "/$targetIndex/_search", emptyMap(), StringEntity(req, ContentType.APPLICATION_JSON))
+        assertTrue(rollupRes.restStatus() == RestStatus.OK)
+        rawAggRes = rawRes.asMap()["aggregations"] as Map<String, Map<String, Any>>
+        rollupAggRes = rollupRes.asMap()["aggregations"] as Map<String, Map<String, Any>>
+        assertEquals(
+            "Source and rollup index did not return same min results",
+            rawAggRes.getValue("earnings_total")["value"],
+            rollupAggRes.getValue("earnings_total")["value"]
         )
     }
 

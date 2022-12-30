@@ -7,8 +7,6 @@
 
 package org.opensearch.indexmanagement.rollup.util
 
-import org.apache.lucene.analysis.standard.StandardAnalyzer
-import org.apache.lucene.queryparser.classic.QueryParser
 import org.apache.lucene.search.Query
 import org.opensearch.action.get.GetResponse
 import org.opensearch.action.search.SearchRequest
@@ -31,6 +29,8 @@ import org.opensearch.index.query.QueryStringQueryBuilder
 import org.opensearch.index.query.RangeQueryBuilder
 import org.opensearch.index.query.TermQueryBuilder
 import org.opensearch.index.query.TermsQueryBuilder
+import org.opensearch.index.search.QueryParserHelper
+import org.opensearch.index.search.QueryStringQueryParser
 import org.opensearch.indexmanagement.common.model.dimension.DateHistogram
 import org.opensearch.indexmanagement.common.model.dimension.Dimension
 import org.opensearch.indexmanagement.common.model.dimension.Histogram
@@ -45,6 +45,7 @@ import org.opensearch.indexmanagement.rollup.model.metric.Max
 import org.opensearch.indexmanagement.rollup.model.metric.Min
 import org.opensearch.indexmanagement.rollup.model.metric.Sum
 import org.opensearch.indexmanagement.rollup.model.metric.ValueCount
+import org.opensearch.indexmanagement.rollup.query.QueryStringQueryUtil
 import org.opensearch.indexmanagement.rollup.settings.LegacyOpenDistroRollupSettings
 import org.opensearch.indexmanagement.rollup.settings.RollupSettings
 import org.opensearch.indexmanagement.util.IndexUtils
@@ -373,7 +374,12 @@ fun Rollup.rewriteQueryBuilder(
             newMatchPhraseQueryBuilder.boost(queryBuilder.boost())
         }
         is QueryStringQueryBuilder -> {
-            rewriteQueryStringQueryBuilder(queryBuilder, concreteIndexName) { it + "." + Dimension.Type.TERMS.type }
+            /*var (fields, parsedQuery) = parseQueryStringQueryBuilder(queryBuilder, concreteIndexName)
+            fields.forEach { field ->
+                parsedQuery = parsedQuery.replace("$field:", "$field.${Dimension.Type.TERMS.type}:")
+            }
+            QueryStringQueryBuilder(parsedQuery)*/
+            QueryStringQueryUtil.rewriteQueryStringQuery(queryBuilder, concreteIndexName)
         }
         // We do nothing otherwise, the validation logic should have already verified so not throwing an exception
         else -> queryBuilder
@@ -385,39 +391,72 @@ fun rewriteQueryStringQueryBuilder(
     concreteIndexName: String,
     fieldRewriteFn: (String?) -> String?
 ): QueryStringQueryBuilder {
-    val luceneQuery = queryBuilder.toQuery(QueryShardContextFactory.createShardContext(concreteIndexName))
-    var parser = object : QueryParser(null, StandardAnalyzer()) {
-        override fun getFuzzyQuery(field: String?, termStr: String?, minSimilarity: Float): Query? {
-            return super.getFuzzyQuery(fieldRewriteFn(field), termStr, minSimilarity)
+    val context = QueryShardContextFactory.createShardContext(concreteIndexName)
+    val luceneQuery = queryBuilder.toQuery(context)
+
+    val queryParser: QueryStringQueryParser
+    val isLenient = context.queryStringLenient()
+    val defaultFields: List<String> = context.defaultFields()
+    if (QueryParserHelper.hasAllFieldsWildcard(defaultFields)) {
+        queryParser = object : QueryStringQueryParser(context, false) {
+            override fun getFuzzyQuery(field: String?, termStr: String?, minSimilarity: Float): Query? {
+                return super.getFuzzyQuery(fieldRewriteFn(field), termStr, minSimilarity)
+            }
+            override fun getPrefixQuery(field: String?, termStr: String?): Query {
+                return super.getPrefixQuery(fieldRewriteFn(field), termStr)
+            }
+            override fun getFieldQuery(field: String?, queryText: String?, quoted: Boolean): Query {
+                return super.getFieldQuery(fieldRewriteFn(field), queryText, quoted)
+            }
+            override fun getWildcardQuery(field: String?, termStr: String?): Query {
+                return super.getWildcardQuery(fieldRewriteFn(field), termStr)
+            }
+            override fun getFieldQuery(field: String?, queryText: String?, slop: Int): Query {
+                return super.getFieldQuery(fieldRewriteFn(field), queryText, slop)
+            }
+            override fun getRangeQuery(field: String?, part1: String?, part2: String?, startInclusive: Boolean, endInclusive: Boolean): Query {
+                return super.getRangeQuery(fieldRewriteFn(field), part1, part2, startInclusive, endInclusive)
+            }
         }
-        override fun getPrefixQuery(field: String?, termStr: String?): Query {
-            return super.getPrefixQuery(fieldRewriteFn(field), termStr)
-        }
-        override fun getFieldQuery(field: String?, queryText: String?, quoted: Boolean): Query {
-            return super.getFieldQuery(fieldRewriteFn(field), queryText, quoted)
-        }
-        override fun getWildcardQuery(field: String?, termStr: String?): Query {
-            return super.getWildcardQuery(fieldRewriteFn(field), termStr)
-        }
-        override fun getFieldQuery(field: String?, queryText: String?, slop: Int): Query {
-            return super.getFieldQuery(fieldRewriteFn(field), queryText, slop)
-        }
-        override fun getRangeQuery(field: String?, part1: String?, part2: String?, startInclusive: Boolean, endInclusive: Boolean): Query {
-            return super.getRangeQuery(fieldRewriteFn(field), part1, part2, startInclusive, endInclusive)
+    } else {
+        val resolvedFields = QueryParserHelper.resolveMappingFields(
+            context,
+            QueryParserHelper.parseFieldsAndWeights(defaultFields)
+        )
+        queryParser = object : QueryStringQueryParser(context, resolvedFields, isLenient) {
+            override fun getFuzzyQuery(field: String?, termStr: String?, minSimilarity: Float): Query? {
+                return super.getFuzzyQuery(fieldRewriteFn(field), termStr, minSimilarity)
+            }
+            override fun getPrefixQuery(field: String?, termStr: String?): Query {
+                return super.getPrefixQuery(fieldRewriteFn(field), termStr)
+            }
+            override fun getFieldQuery(field: String?, queryText: String?, quoted: Boolean): Query {
+                return super.getFieldQuery(fieldRewriteFn(field), queryText, quoted)
+            }
+            override fun getWildcardQuery(field: String?, termStr: String?): Query {
+                return super.getWildcardQuery(fieldRewriteFn(field), termStr)
+            }
+            override fun getFieldQuery(field: String?, queryText: String?, slop: Int): Query {
+                return super.getFieldQuery(fieldRewriteFn(field), queryText, slop)
+            }
+            override fun getRangeQuery(field: String?, part1: String?, part2: String?, startInclusive: Boolean, endInclusive: Boolean): Query {
+                return super.getRangeQuery(fieldRewriteFn(field), part1, part2, startInclusive, endInclusive)
+            }
         }
     }
     var newLuceneQuery: Query?
     try {
-        newLuceneQuery = parser.parse(luceneQuery.toString())
+        newLuceneQuery = queryParser.parse(luceneQuery.toString())
     } catch (e: Exception) {
         throw IllegalArgumentException("The ${queryBuilder.name} query is invalid")
     }
     return QueryStringQueryBuilder(newLuceneQuery.toString())
 }
 
-fun Set<Rollup>.buildRollupQuery(fieldNameMappingTypeMap: Map<String, String>, oldQuery: QueryBuilder, concreteIndexName: String = ""): QueryBuilder {
+fun Set<Rollup>.buildRollupQuery(fieldNameMappingTypeMap: Map<String, String>, oldQuery: QueryBuilder): QueryBuilder {
     val wrappedQueryBuilder = BoolQueryBuilder()
-    wrappedQueryBuilder.must(this.first().rewriteQueryBuilder(oldQuery, fieldNameMappingTypeMap, concreteIndexName))
+    val rollup = this.first()
+    wrappedQueryBuilder.must(this.first().rewriteQueryBuilder(oldQuery, fieldNameMappingTypeMap, rollup.sourceIndex))
     wrappedQueryBuilder.should(TermsQueryBuilder("rollup._id", this.map { it.id }))
     wrappedQueryBuilder.minimumShouldMatch(1)
     return wrappedQueryBuilder
@@ -441,8 +480,7 @@ fun Rollup.populateFieldMappings(): Set<RollupFieldMapping> {
 @Suppress("ComplexMethod")
 fun SearchSourceBuilder.rewriteSearchSourceBuilder(
     jobs: Set<Rollup>,
-    fieldNameMappingTypeMap: Map<String, String>,
-    concreteIndexName: String
+    fieldNameMappingTypeMap: Map<String, String>
 ): SearchSourceBuilder {
     val ssb = SearchSourceBuilder()
     // can use first() here as all jobs in the set will have a superset of the query's terms
@@ -458,7 +496,7 @@ fun SearchSourceBuilder.rewriteSearchSourceBuilder(
     if (this.minScore() != null) ssb.minScore(this.minScore())
     if (this.postFilter() != null) ssb.postFilter(this.postFilter())
     ssb.profile(this.profile())
-    if (this.query() != null) ssb.query(jobs.buildRollupQuery(fieldNameMappingTypeMap, this.query(), concreteIndexName))
+    if (this.query() != null) ssb.query(jobs.buildRollupQuery(fieldNameMappingTypeMap, this.query()))
     this.rescores()?.forEach { ssb.addRescorer(it) }
     this.scriptFields()?.forEach { ssb.scriptField(it.fieldName(), it.script(), it.ignoreFailure()) }
     if (this.searchAfter() != null) ssb.searchAfter(this.searchAfter())
@@ -479,10 +517,9 @@ fun SearchSourceBuilder.rewriteSearchSourceBuilder(
 
 fun SearchSourceBuilder.rewriteSearchSourceBuilder(
     job: Rollup,
-    fieldNameMappingTypeMap: Map<String, String>,
-    concreteIndexName: String
+    fieldNameMappingTypeMap: Map<String, String>
 ): SearchSourceBuilder {
-    return this.rewriteSearchSourceBuilder(setOf(job), fieldNameMappingTypeMap, concreteIndexName)
+    return this.rewriteSearchSourceBuilder(setOf(job), fieldNameMappingTypeMap)
 }
 
 fun Rollup.getInitialDocValues(docCount: Long): MutableMap<String, Any?> =

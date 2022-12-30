@@ -24,12 +24,12 @@ import org.opensearch.indexmanagement.common.model.dimension.Dimension
 import org.opensearch.indexmanagement.rollup.model.Rollup
 import org.opensearch.indexmanagement.rollup.model.RollupFieldMapping
 import org.opensearch.indexmanagement.rollup.model.RollupFieldMapping.Companion.UNKNOWN_MAPPING
+import org.opensearch.indexmanagement.rollup.query.QueryStringQueryUtil.parseQueryStringQueryBuilder
 import org.opensearch.indexmanagement.rollup.settings.RollupSettings
 import org.opensearch.indexmanagement.rollup.util.getDateHistogram
 import org.opensearch.indexmanagement.rollup.util.getRollupJobs
 import org.opensearch.indexmanagement.rollup.util.isRollupIndex
 import org.opensearch.indexmanagement.rollup.util.populateFieldMappings
-import org.opensearch.indexmanagement.rollup.util.rewriteQueryStringQueryBuilder
 import org.opensearch.indexmanagement.rollup.util.rewriteSearchSourceBuilder
 import org.opensearch.search.aggregations.AggregationBuilder
 import org.opensearch.search.aggregations.bucket.histogram.DateHistogramAggregationBuilder
@@ -214,11 +214,9 @@ class RollupInterceptor(
             }
             is QueryStringQueryBuilder -> {
                 // Throws IllegalArgumentException if unable to parse query
-                rewriteQueryStringQueryBuilder(query, concreteSourceIndexName) {
-                    fieldMappings.add(
-                        RollupFieldMapping(RollupFieldMapping.Companion.FieldType.DIMENSION, it.toString(), Dimension.Type.TERMS.type)
-                    )
-                    it
+                val (fields, _) = parseQueryStringQueryBuilder(query, concreteSourceIndexName)
+                fields.forEach {
+                    RollupFieldMapping(RollupFieldMapping.Companion.FieldType.DIMENSION, it.toString(), Dimension.Type.TERMS.type)
                 }
             }
             else -> {
@@ -296,9 +294,9 @@ class RollupInterceptor(
         val matchedRollup = pickRollupJob(matchingRollupJobs.keys)
         val fieldNameMappingTypeMap = matchingRollupJobs.getValue(matchedRollup).associateBy({ it.fieldName }, { it.mappingType })
         if (searchAllJobs) {
-            request.source(request.source().rewriteSearchSourceBuilder(matchingRollupJobs.keys, fieldNameMappingTypeMap, matchedRollup.sourceIndex))
+            request.source(request.source().rewriteSearchSourceBuilder(matchingRollupJobs.keys, fieldNameMappingTypeMap))
         } else {
-            request.source(request.source().rewriteSearchSourceBuilder(matchedRollup, fieldNameMappingTypeMap, matchedRollup.sourceIndex))
+            request.source(request.source().rewriteSearchSourceBuilder(matchedRollup, fieldNameMappingTypeMap))
         }
     }
 }

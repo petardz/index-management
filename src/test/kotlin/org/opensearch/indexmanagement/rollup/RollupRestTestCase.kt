@@ -7,12 +7,14 @@ package org.opensearch.indexmanagement.rollup
 
 import org.apache.http.HttpEntity
 import org.apache.http.HttpHeaders
+import org.apache.http.HttpStatus
 import org.apache.http.entity.ContentType.APPLICATION_JSON
 import org.apache.http.entity.StringEntity
 import org.apache.http.message.BasicHeader
 import org.junit.After
 import org.junit.AfterClass
 import org.junit.Before
+import org.opensearch.client.Request
 import org.opensearch.client.Response
 import org.opensearch.client.ResponseException
 import org.opensearch.client.RestClient
@@ -99,7 +101,8 @@ abstract class RollupRestTestCase : IndexManagementRestTestCase() {
                 {
                     "transient": {
                         "logger.org.opensearch.indexmanagement.rollup":"DEBUG",
-                        "logger.org.opensearch.jobscheduler.sweeper":"DEBUG"
+                        "logger.org.opensearch.jobscheduler.sweeper":"DEBUG",
+                        "logger.org.opensearch":"DEBUG"
                     }
                 }
                 """.trimIndent(),
@@ -317,5 +320,67 @@ abstract class RollupRestTestCase : IndexManagementRestTestCase() {
             StringEntity(request, APPLICATION_JSON)
         )
         assertEquals("Request failed", RestStatus.OK, res.restStatus())
+    }
+
+    protected fun createSampleIndexForQSQTest(index: String) {
+        val mapping = """
+            "properties": {
+                "event_ts": {
+                    "type": "date"
+                },
+                "state": {
+                    "type": "keyword"
+                },
+                "state1": {
+                    "type": "keyword"
+                },
+                "earnings": {
+                    "type": "long"
+                }
+                        
+            }
+        """.trimIndent()
+        createIndex(index, Settings.EMPTY, mapping)
+
+        for (i in 1..5) {
+            val doc = """
+                {
+                    "event_ts": "2019-01-01T12:10:30Z",
+                    "state": "TX",
+                    "state1": "TX1",
+                    "earnings": $i
+                }
+            """.trimIndent()
+            indexDoc(index, "$i", doc)
+        }
+        for (i in 6..8) {
+            val doc = """
+                {
+                    "event_ts": "2019-01-01T12:10:30Z",
+                    "state": "TA",
+                    "state1": "TA1",
+                    "earnings": $i
+                }
+            """.trimIndent()
+            indexDoc(index, "$i", doc)
+        }
+        for (i in 9..11) {
+            val doc = """
+                {
+                    "event_ts": "2019-01-02T12:10:30Z",
+                    "state": "CA",
+                    "state1": "CA1",
+                    "earnings": $i
+                }
+            """.trimIndent()
+            indexDoc(index, "$i", doc)
+        }
+    }
+
+    protected fun indexDoc(index: String, id: String, doc: String) {
+        val request = Request("POST", "$index/_doc/$id/?refresh=true")
+        request.setJsonEntity(doc)
+        val resp = client().performRequest(request)
+        assertEquals(HttpStatus.SC_CREATED, resp.restStatus().status)
     }
 }
